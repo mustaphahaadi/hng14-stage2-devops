@@ -1,0 +1,27 @@
+# Docker Compose file for the application services
+
+services:
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+  backend:
+    build: ./backend
+    ports:
+      - "5000:5000"
+    environment:
+      - DATABASE_URL=postgres://user:password@db:5432/mydatabase
+    depends_on:
+      - db
+
+  db:
+    image: postgres:13
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=mydatabase
+    volumes:
+      - db_data:/var/lib/postgresql/data
