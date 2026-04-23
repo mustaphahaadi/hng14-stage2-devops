@@ -1,15 +1,29 @@
-#MULTI-STAGE BUILD FOR WORKER SERVICE
+FROM python:3.11-slim AS builder
 
-# Stage 1: Build the application
-FROM python:3.9-slim AS builder
-WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 \
+	PYTHONUNBUFFERED=1
+
+WORKDIR /build
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m venv /opt/venv \
+	&& /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
+
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+	PYTHONUNBUFFERED=1 \
+	PATH="/opt/venv/bin:$PATH"
+
+RUN groupadd --system appgroup && useradd --system --gid appgroup appuser
+
+WORKDIR /app
+COPY --from=builder /opt/venv /opt/venv
 COPY . .
 
-# Stage 2: Create the final image
-FROM python:3.9-slim
-WORKDIR /app
-COPY --from=builder /app /app
-EXPOSE 5000
+RUN chown -R appuser:appgroup /app
+USER appuser
+
+HEALTHCHECK --interval=10s --timeout=3s --start-period=10s --retries=5 \
+  CMD python -c "import os, redis; r=redis.Redis(host=os.getenv('REDIS_HOST','redis'), port=int(os.getenv('REDIS_PORT','6379'))); r.ping()"
+
 CMD ["python", "worker.py"]
