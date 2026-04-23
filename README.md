@@ -90,11 +90,3 @@ Expected output includes:
 docker compose --env-file .env -f docker-compose.yml down -v --remove-orphans
 ```
 
-## Security and Submission Notes
-
-- `.env` is ignored and must never be committed.
-- Use `.env.example` for required variable documentation.
-- Do not hardcode secrets, passwords, or tokens in source files, YAML, scripts, or history.
-- Keep repository public for grading.
-- Commit all work; do not leave required changes only in local workspace.
-- Do not open a pull request to the starter repository.
