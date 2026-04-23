@@ -21,6 +21,7 @@ def _handle_shutdown(_signum, _frame):
 signal.signal(signal.SIGINT, _handle_shutdown)
 signal.signal(signal.SIGTERM, _handle_shutdown)
 
+
 def process_job(job_id):
     print(f"Processing job {job_id}")
     time.sleep(PROCESSING_DELAY_SECONDS)  # simulate work
