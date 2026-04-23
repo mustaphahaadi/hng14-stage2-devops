@@ -1,0 +1,158 @@
+name: ci-cd
+
+on:
+  pull_request:
+  push:
+    branches:
+      - '**'
+
+jobs:
+  pipeline:
+    runs-on: ubuntu-latest
+    services:
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
+    env:
+      REGISTRY: localhost:5000
+      SHA_TAG: ${{ github.sha }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Stage 1: lint
+      - name: Install lint dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r api/requirements-dev.txt
+          npm --prefix frontend install
+
+      - name: Lint Python (flake8)
+        run: flake8 api worker
+
+      - name: Lint JavaScript (eslint)
+        run: npm --prefix frontend run lint
+
+      - name: Lint Dockerfiles (hadolint)
+        run: |
+          docker run --rm -i hadolint/hadolint < api/Dockerfile
+          docker run --rm -i hadolint/hadolint < worker/Dockerfile
+          docker run --rm -i hadolint/hadolint < frontend/Dockerfile
+
+      # Stage 2: test
+      - name: Install test dependencies
+        run: |
+          pip install -r api/requirements.txt -r api/requirements-dev.txt
+
+      - name: Run API unit tests with coverage
+        run: |
+          pytest api/tests --cov=api --cov-report=xml:coverage.xml
+
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+      # Stage 3: build
+      - name: Build and tag images
+        run: |
+          docker build -t $REGISTRY/job-api:$SHA_TAG -t $REGISTRY/job-api:latest ./api
+          docker build -t $REGISTRY/job-worker:$SHA_TAG -t $REGISTRY/job-worker:latest ./worker
+          docker build -t $REGISTRY/job-frontend:$SHA_TAG -t $REGISTRY/job-frontend:latest ./frontend
+
+      - name: Push images to local registry service
+        run: |
+          docker push $REGISTRY/job-api:$SHA_TAG
+          docker push $REGISTRY/job-api:latest
+          docker push $REGISTRY/job-worker:$SHA_TAG
+          docker push $REGISTRY/job-worker:latest
+          docker push $REGISTRY/job-frontend:$SHA_TAG
+          docker push $REGISTRY/job-frontend:latest
+
+      # Stage 4: security scan
+      - name: Install Trivy
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget gnupg
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: Scan images with Trivy and fail on CRITICAL
+        run: |
+          set -e
+          critical_found=0
+          for image in "$REGISTRY/job-api:$SHA_TAG" "$REGISTRY/job-worker:$SHA_TAG" "$REGISTRY/job-frontend:$SHA_TAG"; do
+            file_name="$(echo "$image" | tr '/:' '__').sarif"
+            if ! trivy image --severity CRITICAL --format sarif --output "$file_name" --exit-code 1 "$image"; then
+              critical_found=1
+            fi
+          done
+          if [ "$critical_found" -ne 0 ]; then
+            echo "Critical vulnerabilities found"
+            exit 1
+          fi
+
+      - name: Upload Trivy SARIF artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-sarif
+          path: '*.sarif'
+
+      # Stage 5: integration test
+      - name: Prepare CI env file
+        run: |
+          cat > .env.ci <<EOF
+          IMAGE_TAG=$SHA_TAG
+          INTERNAL_NETWORK=jobnet-ci
+          FRONTEND_PORT=3000
+          FRONTEND_IMAGE=$REGISTRY/job-frontend
+          FRONTEND_CPU_LIMIT=0.50
+          FRONTEND_MEM_LIMIT=256m
+          API_BASE_URL=http://api:8000
+          API_PORT=8000
+          API_IMAGE=$REGISTRY/job-api
+          API_CPU_LIMIT=0.50
+          API_MEM_LIMIT=256m
+          REDIS_HOST=redis
+          REDIS_PORT=6379
+          QUEUE_NAME=job
+          WORKER_IMAGE=$REGISTRY/job-worker
+          WORKER_CPU_LIMIT=0.50
+          WORKER_MEM_LIMIT=256m
+          POLL_TIMEOUT_SECONDS=5
+          PROCESSING_DELAY_SECONDS=2
+          REDIS_IMAGE=redis:7-alpine
+          REDIS_CPU_LIMIT=0.30
+          REDIS_MEM_LIMIT=256m
+          EOF
+
+      - name: Start integration stack
+        run: docker compose --env-file .env.ci -f docker-compose.yml up -d
+
+      - name: Run integration test
+        run: bash scripts/integration_test.sh .env.ci
+
+      - name: Tear down integration stack
+        if: always()
+        run: docker compose --env-file .env.ci -f docker-compose.yml down -v --remove-orphans
+
+      # Stage 6: deploy
+      - name: Deploy (main only) with rolling update
+        if: github.ref == 'refs/heads/main'
+        run: bash scripts/rolling_update.sh "$REGISTRY/job-frontend:$SHA_TAG" frontend-prod 60
