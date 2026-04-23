@@ -1,15 +1,15 @@
-FROM node:22-alpine AS deps
+FROM node:22-alpine as builder
 
 WORKDIR /app
 COPY package.json ./
 RUN npm install --omit=dev
 
-FROM node:22-alpine
+FROM node:22-alpine as runtime
 
 ENV NODE_ENV=production
 
 WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+COPY --from=builder /app/node_modules ./node_modules
 COPY . .
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup \

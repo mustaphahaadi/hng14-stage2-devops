@@ -1,4 +1,4 @@
-FROM python:3.11-slim AS builder
+FROM python:3.11-slim as builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
 	PYTHONUNBUFFERED=1
@@ -8,7 +8,7 @@ COPY requirements.txt ./
 RUN python -m venv /opt/venv \
 	&& /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
-FROM python:3.11-slim
+FROM python:3.11-slim as runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
 	PYTHONUNBUFFERED=1 \

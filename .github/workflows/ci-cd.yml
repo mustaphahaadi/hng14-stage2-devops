@@ -32,6 +32,9 @@ jobs:
         with:
           node-version: '22'
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
       # Stage 1: lint
       - name: Install lint dependencies
         run: |
@@ -58,7 +61,7 @@ jobs:
 
       - name: Run API unit tests with coverage
         run: |
-          pytest api/tests --cov=api --cov-report=xml:coverage.xml
+          pytest tests --cov=api --cov-report=xml:coverage.xml
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
@@ -67,20 +70,38 @@ jobs:
           path: coverage.xml
 
       # Stage 3: build
-      - name: Build and tag images
-        run: |
-          docker build -t $REGISTRY/job-api:$SHA_TAG -t $REGISTRY/job-api:latest ./api
-          docker build -t $REGISTRY/job-worker:$SHA_TAG -t $REGISTRY/job-worker:latest ./worker
-          docker build -t $REGISTRY/job-frontend:$SHA_TAG -t $REGISTRY/job-frontend:latest ./frontend
+      - name: Build and push API image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./api
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/job-api:${{ env.SHA_TAG }}
+            ${{ env.REGISTRY }}/job-api:latest
+          cache-from: type=gha,scope=job-api
+          cache-to: type=gha,mode=max,scope=job-api
 
-      - name: Push images to local registry service
-        run: |
-          docker push $REGISTRY/job-api:$SHA_TAG
-          docker push $REGISTRY/job-api:latest
-          docker push $REGISTRY/job-worker:$SHA_TAG
-          docker push $REGISTRY/job-worker:latest
-          docker push $REGISTRY/job-frontend:$SHA_TAG
-          docker push $REGISTRY/job-frontend:latest
+      - name: Build and push worker image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./worker
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/job-worker:${{ env.SHA_TAG }}
+            ${{ env.REGISTRY }}/job-worker:latest
+          cache-from: type=gha,scope=job-worker
+          cache-to: type=gha,mode=max,scope=job-worker
+
+      - name: Build and push frontend image (cached)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/job-frontend:${{ env.SHA_TAG }}
+            ${{ env.REGISTRY }}/job-frontend:latest
+          cache-from: type=gha,scope=job-frontend
+          cache-to: type=gha,mode=max,scope=job-frontend
 
       # Stage 4: security scan
       - name: Install Trivy
@@ -117,42 +138,31 @@ jobs:
       # Stage 5: integration test
       - name: Prepare CI env file
         run: |
-          cat > .env.ci <<EOF
+          cp .env.example .env.ci
+          cat >> .env.ci <<EOF
           IMAGE_TAG=$SHA_TAG
           INTERNAL_NETWORK=jobnet-ci
-          FRONTEND_PORT=3000
           FRONTEND_IMAGE=$REGISTRY/job-frontend
-          FRONTEND_CPU_LIMIT=0.50
-          FRONTEND_MEM_LIMIT=256m
-          API_BASE_URL=http://api:8000
-          API_PORT=8000
           API_IMAGE=$REGISTRY/job-api
-          API_CPU_LIMIT=0.50
-          API_MEM_LIMIT=256m
-          REDIS_HOST=redis
-          REDIS_PORT=6379
-          QUEUE_NAME=job
           WORKER_IMAGE=$REGISTRY/job-worker
-          WORKER_CPU_LIMIT=0.50
-          WORKER_MEM_LIMIT=256m
-          POLL_TIMEOUT_SECONDS=5
-          PROCESSING_DELAY_SECONDS=2
-          REDIS_IMAGE=redis:7-alpine
-          REDIS_CPU_LIMIT=0.30
-          REDIS_MEM_LIMIT=256m
           EOF
 
       - name: Start integration stack
-        run: docker compose --env-file .env.ci -f docker-compose.yml up -d
+        run: docker compose -f docker-compose.yml --env-file .env.ci up -d --wait
 
       - name: Run integration test
-        run: bash scripts/integration_test.sh .env.ci
+        run: timeout 120s bash tests/integration_test.sh .env.ci
 
       - name: Tear down integration stack
         if: always()
-        run: docker compose --env-file .env.ci -f docker-compose.yml down -v --remove-orphans
+        run: |
+          if [[ -f .env.ci ]]; then
+            docker compose -f docker-compose.yml --env-file .env.ci down -v --remove-orphans || true
+          else
+            docker compose -f docker-compose.yml down -v --remove-orphans || true
+          fi
 
       # Stage 6: deploy
       - name: Deploy (main only) with rolling update
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: bash scripts/rolling_update.sh "$REGISTRY/job-frontend:$SHA_TAG" frontend-prod 60
