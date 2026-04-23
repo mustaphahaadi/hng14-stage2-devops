@@ -35,7 +35,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          driver: docker
+          driver: docker-container
+          driver-opts: network=host
 
       # Stage 1: lint
       - name: Install lint dependencies
@@ -80,8 +81,8 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/job-api:${{ env.SHA_TAG }}
             ${{ env.REGISTRY }}/job-api:latest
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/job-api:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/job-api:buildcache,mode=max
+          cache-from: type=gha,scope=job-api
+          cache-to: type=gha,mode=max,scope=job-api
 
       - name: Build and push worker image (cached)
         uses: docker/build-push-action@v6
@@ -91,8 +92,8 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/job-worker:${{ env.SHA_TAG }}
             ${{ env.REGISTRY }}/job-worker:latest
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/job-worker:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/job-worker:buildcache,mode=max
+          cache-from: type=gha,scope=job-worker
+          cache-to: type=gha,mode=max,scope=job-worker
 
       - name: Build and push frontend image (cached)
         uses: docker/build-push-action@v6
@@ -102,8 +103,8 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/job-frontend:${{ env.SHA_TAG }}
             ${{ env.REGISTRY }}/job-frontend:latest
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/job-frontend:buildcache
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/job-frontend:buildcache,mode=max
+          cache-from: type=gha,scope=job-frontend
+          cache-to: type=gha,mode=max,scope=job-frontend
 
       # Stage 4: security scan
       - name: Install Trivy
